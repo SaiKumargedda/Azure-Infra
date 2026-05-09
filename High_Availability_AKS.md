@@ -1141,3 +1141,475 @@ This architecture provides:
 * Strong interview-ready concepts
 
 This is one of the most common enterprise AKS production deployment patterns used in real-world organizations.
+
+
+# Additional Important Concept: System Node Pools vs User Node Pools Scheduling
+
+This section should be added to the AKS Upgrade and High Availability guide.
+
+---
+
+# System Node Pools vs User Node Pools
+
+AKS supports two types of node pools:
+
+| Node Pool Type | Purpose |
+|---|---|
+| System Node Pool | Critical Kubernetes system workloads |
+| User Node Pool | Application workloads |
+
+---
+
+# 1. System Node Pool
+
+System node pools host critical Kubernetes components.
+
+Examples:
+
+- CoreDNS
+- metrics-server
+- kube-proxy
+- CNI pods
+- AGIC
+- monitoring agents
+- security agents
+
+---
+
+# Important Recommendation
+
+Microsoft recommends:
+
+```text
+Always keep at least 3 system nodes
+```
+
+for production HA.
+
+---
+
+# System Node Pool Characteristics
+
+| Feature | System Pool |
+|---|---|
+| Mode | System |
+| Critical workloads | Yes |
+| Minimum nodes | Recommended 3 |
+| AZ deployment | Recommended |
+| Autoscaling | Supported |
+| Used for applications | Usually avoided |
+
+---
+
+# Example Terraform System Node Pool
+
+```hcl
+default_node_pool {
+  name                 = "systempool"
+  vm_size              = "Standard_D4s_v5"
+
+  node_count           = 3
+
+  auto_scaling_enabled = true
+  min_count            = 3
+  max_count            = 10
+
+  mode                 = "System"
+
+  zones = ["1", "2", "3"]
+
+  vnet_subnet_id = azurerm_subnet.aks.id
+}
+```
+
+---
+
+# 2. User Node Pool
+
+User node pools host:
+
+- Business applications
+- APIs
+- Frontend apps
+- Backend apps
+- Batch jobs
+- Stateful applications
+
+---
+
+# User Node Pool Characteristics
+
+| Feature | User Pool |
+|---|---|
+| Mode | User |
+| Application workloads | Yes |
+| Separate scaling | Yes |
+| Dedicated workloads | Yes |
+| Taints commonly used | Yes |
+
+---
+
+# Example Terraform User Node Pool
+
+```hcl
+resource "azurerm_kubernetes_cluster_node_pool" "userpool" {
+  name                  = "userpool"
+  kubernetes_cluster_id = azurerm_kubernetes_cluster.aks.id
+
+  vm_size = "Standard_D4s_v5"
+
+  mode = "User"
+
+  enable_auto_scaling = true
+  min_count           = 2
+  max_count           = 20
+
+  zones = ["1", "2", "3"]
+
+  node_taints = [
+    "workload=apps:NoSchedule"
+  ]
+
+  vnet_subnet_id = azurerm_subnet.aks.id
+}
+```
+
+---
+
+# Why Separate System and User Pools?
+
+Benefits:
+
+- Better isolation
+- Safer upgrades
+- Better scaling
+- Prevent application starvation
+- Protect critical Kubernetes services
+
+---
+
+# Real Production Architecture
+
+```text
+AKS Cluster
+   |
+--------------------------------
+|                              |
+System Node Pool         User Node Pool
+|                              |
+CoreDNS                  Applications
+kube-proxy               APIs
+Metrics Server           Frontend
+CNI Pods                 Backend
+AGIC                     Batch Jobs
+```
+
+---
+
+# 3. Scheduling Applications on Specific Node Pools
+
+Very important production concept.
+
+Applications should usually run only on:
+
+```text
+User Node Pools
+```
+
+NOT on:
+- system node pools
+
+---
+
+# Why?
+
+Because application workloads can:
+
+- consume resources
+- affect CoreDNS
+- affect monitoring
+- affect cluster stability
+
+---
+
+# 4. Using Taints on System Pools
+
+Common production pattern:
+
+System node pool taint:
+
+```text
+CriticalAddonsOnly=true:NoSchedule
+```
+
+This prevents normal applications from scheduling there.
+
+---
+
+# 5. Using Node Selectors
+
+Applications can target user pools.
+
+Example:
+
+```yaml
+nodeSelector:
+  agentpool: userpool
+```
+
+---
+
+# 6. Using Node Affinity
+
+More flexible than nodeSelector.
+
+---
+
+# Example Node Affinity
+
+```yaml
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: agentpool
+          operator: In
+          values:
+          - userpool
+```
+
+---
+
+# How It Works
+
+Kubernetes scheduler checks:
+
+```text
+Node Label:
+agentpool=userpool
+```
+
+Then schedules pod only on matching nodes.
+
+---
+
+# 7. System Workload Scheduling
+
+AKS automatically schedules critical workloads on:
+
+```text
+System Node Pools
+```
+
+Examples:
+
+- CoreDNS
+- kube-proxy
+- CNI
+- metrics-server
+
+---
+
+# 8. User Workload Scheduling
+
+Application workloads schedule on:
+
+```text
+User Node Pools
+```
+
+using:
+- taints
+- tolerations
+- node selectors
+- node affinity
+
+---
+
+# 9. Taints and Tolerations Example
+
+## System Pool Taint
+
+```text
+CriticalAddonsOnly=true:NoSchedule
+```
+
+---
+
+## Application Without Toleration
+
+Application cannot schedule on system nodes.
+
+---
+
+## Application With Toleration
+
+```yaml
+tolerations:
+- key: "CriticalAddonsOnly"
+  operator: "Exists"
+```
+
+Now app CAN schedule there.
+
+Usually avoided unless necessary.
+
+---
+
+# 10. Best Practice During Upgrades
+
+Upgrade order:
+
+```text
+1. Control Plane
+2. System Node Pools
+3. User Node Pools
+```
+
+---
+
+# Why Upgrade System Pools First?
+
+Because:
+- CoreDNS
+- kube-proxy
+- CNI
+
+must remain compatible with cluster version.
+
+---
+
+# Important Production Recommendation
+
+Never place:
+- heavy applications
+- batch jobs
+- memory-intensive workloads
+
+on:
+- system node pools
+
+---
+
+# 11. Multi-Node Pool Production Pattern
+
+```text
+System Pool
+  |
+CoreDNS
+Metrics
+CNI
+AGIC
+
+User Pool 1
+  |
+Frontend Apps
+
+User Pool 2
+  |
+Backend APIs
+
+User Pool 3
+  |
+Batch Jobs
+```
+
+---
+
+# 12. Spot Node Pools
+
+Optional advanced pattern.
+
+Example:
+
+```text
+Spot Pool
+```
+
+for:
+- CI jobs
+- batch workloads
+- non-critical workloads
+
+---
+
+# 13. Important Interview Questions
+
+## Q1: Why separate system and user node pools?
+
+Answer:
+
+To isolate critical Kubernetes services from application workloads and improve stability, scalability, and upgrade safety.
+
+---
+
+## Q2: Why should apps avoid system node pools?
+
+Answer:
+
+Applications may consume resources and impact critical components like CoreDNS, kube-proxy, and monitoring agents.
+
+---
+
+## Q3: How do applications schedule on specific node pools?
+
+Answer:
+
+Using:
+- nodeSelector
+- node affinity
+- taints/tolerations
+
+---
+
+## Q4: What workloads run on system node pools?
+
+Examples:
+- CoreDNS
+- kube-proxy
+- metrics-server
+- Azure CNI
+- AGIC
+
+---
+
+# 14. Final Enterprise Scheduling Architecture
+
+```text
+Azure Front Door
+       |
+Application Gateway
+       |
+AKS Cluster
+       |
+------------------------------------------------
+|                                              |
+System Node Pool                         User Node Pools
+|                                              |
+CoreDNS                                   Frontend Apps
+Metrics                                   Backend APIs
+CNI                                       Batch Jobs
+kube-proxy                                Stateful Apps
+AGIC
+```
+
+---
+
+# Final Important Understanding
+
+Production AKS clusters should:
+
+- Separate system and user workloads
+- Use node affinity
+- Use taints/tolerations
+- Use topology spread constraints
+- Use PDBs
+- Use surge upgrades
+- Use multi-AZ node pools
+
+This provides:
+- safer upgrades
+- better isolation
+- improved HA
+- enterprise-grade Kubernetes operations
